@@ -8,8 +8,10 @@ import {
   BookOpen,
   Clipboard,
   Download,
+  Building2,
   FileDown,
   FileText,
+  Files,
   Loader2,
   Moon,
   Plus,
@@ -17,6 +19,7 @@ import {
   Sparkles,
   Sun,
   Trash2,
+  Upload,
   Wand2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -27,11 +30,24 @@ import {
   createDocument,
   deleteDocument,
   exportPdf,
+  generateTor,
+  getTorTemplateProfile,
   listDocuments,
+  listTorCompanies,
+  listTorDocuments,
   postMarkdownTask,
   updateDocument,
+  uploadTorDocument,
 } from "@/lib/api";
-import type { DocumentRecord, GenerationMode, MarkdownTask } from "@/lib/types";
+import type {
+  CompanyRecord,
+  DocumentRecord,
+  GenerationMode,
+  MarkdownTask,
+  RetrievedTorExample,
+  TorDocumentRecord,
+  TorTemplateProfile,
+} from "@/lib/types";
 
 const STARTER_MARKDOWN = `# Markdown AI Studio
 
@@ -47,6 +63,8 @@ type Tool = {
   icon: typeof Sparkles;
   run: () => Promise<void>;
 };
+
+type Workspace = "editor" | "tor-upload" | "tor-generate";
 
 function filenameFromTitle(title: string, extension: string) {
   const safe = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -64,6 +82,7 @@ export default function Studio() {
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<Workspace>("editor");
 
   useEffect(() => {
     const storedTheme = window.localStorage.getItem("markdown-ai-theme");
@@ -233,6 +252,36 @@ export default function Studio() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              className={workspace === "editor" ? "action-button border-cyan-500 text-cyan-700 dark:text-cyan-200" : "action-button"}
+              onClick={() => setWorkspace("editor")}
+              type="button"
+            >
+              <FileText size={16} />
+              Editor
+            </button>
+            <button
+              className={
+                workspace === "tor-upload" ? "action-button border-cyan-500 text-cyan-700 dark:text-cyan-200" : "action-button"
+              }
+              onClick={() => setWorkspace("tor-upload")}
+              type="button"
+            >
+              <Upload size={16} />
+              TOR Upload
+            </button>
+            <button
+              className={
+                workspace === "tor-generate"
+                  ? "action-button border-cyan-500 text-cyan-700 dark:text-cyan-200"
+                  : "action-button"
+              }
+              onClick={() => setWorkspace("tor-generate")}
+              type="button"
+            >
+              <Building2 size={16} />
+              Generate TOR
+            </button>
             <button className="icon-button" onClick={handleNewDocument} title="New document" type="button">
               <Plus size={18} />
             </button>
@@ -261,6 +310,7 @@ export default function Studio() {
         </div>
       </header>
 
+      {workspace === "editor" ? (
       <div className="mx-auto grid max-w-[1600px] gap-4 px-4 py-4 xl:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-3 flex items-center justify-between">
@@ -378,6 +428,414 @@ export default function Studio() {
           </div>
         </section>
       </div>
+      ) : (
+        <TorWorkspace
+          activeWorkspace={workspace}
+          onOpenInEditor={(nextTitle, nextMarkdown) => {
+            setTitle(nextTitle);
+            setMarkdown(nextMarkdown);
+            setActiveId(null);
+            setWorkspace("editor");
+            setStatus("Generated TOR ready");
+          }}
+        />
+      )}
     </main>
+  );
+}
+
+function TorWorkspace({
+  activeWorkspace,
+  onOpenInEditor,
+}: {
+  activeWorkspace: Workspace;
+  onOpenInEditor: (title: string, markdown: string) => void;
+}) {
+  const [companies, setCompanies] = useState<CompanyRecord[]>([]);
+  const [selectedCompany, setSelectedCompany] = useState("");
+  const [newCompanyName, setNewCompanyName] = useState("");
+  const [documentCategory, setDocumentCategory] = useState("TOR");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [documents, setDocuments] = useState<TorDocumentRecord[]>([]);
+  const [profile, setProfile] = useState<TorTemplateProfile | null>(null);
+  const [examples, setExamples] = useState<RetrievedTorExample[]>([]);
+  const [generatedTor, setGeneratedTor] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState("Ready");
+  const [error, setError] = useState<string | null>(null);
+  const [projectTitle, setProjectTitle] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
+  const [budget, setBudget] = useState("");
+  const [duration, setDuration] = useState("");
+  const [requirements, setRequirements] = useState("");
+  const [language, setLanguage] = useState<"th" | "en" | "th/en">("th");
+
+  const activeCompany = (newCompanyName || selectedCompany).trim();
+
+  const refreshCompanies = useCallback(async () => {
+    try {
+      const records = await listTorCompanies();
+      setCompanies(records);
+      if (!selectedCompany && records[0]) {
+        setSelectedCompany(records[0].name);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load companies.");
+    }
+  }, [selectedCompany]);
+
+  const refreshCompanyData = useCallback(async (companyName: string) => {
+    if (!companyName) {
+      setDocuments([]);
+      setProfile(null);
+      return;
+    }
+
+    try {
+      const [nextDocuments, nextProfile] = await Promise.all([
+        listTorDocuments(companyName),
+        getTorTemplateProfile(companyName).catch(() => null),
+      ]);
+      setDocuments(nextDocuments);
+      setProfile(nextProfile);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load TOR data.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCompanies();
+  }, [refreshCompanies]);
+
+  useEffect(() => {
+    void refreshCompanyData(selectedCompany);
+  }, [refreshCompanyData, selectedCompany]);
+
+  async function handleUpload() {
+    setError(null);
+    if (!activeCompany) {
+      setError("Select or create a company before upload.");
+      return;
+    }
+    if (!selectedFile) {
+      setError("Choose a TOR file to upload.");
+      return;
+    }
+
+    setIsLoading(true);
+    setMessage("Uploading and learning template");
+    try {
+      const uploaded = await uploadTorDocument({
+        companyName: activeCompany,
+        documentCategory,
+        file: selectedFile,
+      });
+      setSelectedCompany(uploaded.company_name);
+      setNewCompanyName("");
+      setSelectedFile(null);
+      await refreshCompanies();
+      await refreshCompanyData(uploaded.company_name);
+      setMessage("Template updated");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed.");
+      setMessage("Error");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleGenerateTor() {
+    setError(null);
+    if (!selectedCompany) {
+      setError("Select a company profile before generating.");
+      return;
+    }
+    if (!projectTitle.trim()) {
+      setError("Project title is required.");
+      return;
+    }
+
+    setIsLoading(true);
+    setMessage("Generating TOR");
+    setGeneratedTor("");
+    setExamples([]);
+    try {
+      const result = await generateTor({
+        company_name: selectedCompany,
+        project_title: projectTitle,
+        project_description: projectDescription || undefined,
+        budget: budget || undefined,
+        duration: duration || undefined,
+        requirements: requirements || undefined,
+        language,
+      });
+      setGeneratedTor(result.generated_tor);
+      setProfile(result.used_template_profile);
+      setExamples(result.retrieved_examples);
+      setMessage("Generated");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Generation failed.");
+      setMessage("Error");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function copyGeneratedTor() {
+    await navigator.clipboard.writeText(generatedTor);
+    setMessage("Copied");
+  }
+
+  function downloadGeneratedTor() {
+    const blob = new Blob([generatedTor], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filenameFromTitle(projectTitle || "generated-tor", "md");
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="mx-auto grid max-w-[1600px] gap-4 px-4 py-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+      <aside className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-normal text-slate-500 dark:text-slate-400">
+            Companies
+          </h2>
+          <button className="icon-button-small" onClick={refreshCompanies} title="Refresh companies" type="button">
+            <Loader2 size={15} />
+          </button>
+        </div>
+
+        <label className="mb-2 block text-xs font-medium text-slate-500 dark:text-slate-400" htmlFor="tor-company">
+          Company
+        </label>
+        <select
+          className="mb-3 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+          id="tor-company"
+          onChange={(event) => {
+            setSelectedCompany(event.target.value);
+            setNewCompanyName("");
+            setError(null);
+          }}
+          value={selectedCompany}
+        >
+          <option value="">Select company</option>
+          {companies.map((company) => (
+            <option key={company.id} value={company.name}>
+              {company.name}
+            </option>
+          ))}
+        </select>
+
+        <label className="mb-2 block text-xs font-medium text-slate-500 dark:text-slate-400" htmlFor="tor-new-company">
+          New company
+        </label>
+        <input
+          className="mb-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+          id="tor-new-company"
+          onChange={(event) => setNewCompanyName(event.target.value)}
+          placeholder="Company name"
+          value={newCompanyName}
+        />
+
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Building2 size={16} />
+            Profile
+          </div>
+          {profile ? (
+            <div className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">
+              <p>
+                <span className="font-medium">Language:</span> {profile.language}
+              </p>
+              <p>
+                <span className="font-medium">Tone:</span> {profile.tone}
+              </p>
+              <p>{profile.writing_style_summary}</p>
+              <div className="max-h-56 overflow-auto rounded-md bg-white p-2 text-xs dark:bg-slate-900">
+                <pre>{JSON.stringify(profile, null, 2)}</pre>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No template profile yet.</p>
+          )}
+        </div>
+
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">{message}</p>
+        {error ? (
+          <div className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+            {error}
+          </div>
+        ) : null}
+      </aside>
+
+      {activeWorkspace === "tor-upload" ? (
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,480px)_minmax(0,1fr)]">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold">
+              <Upload size={18} />
+              TOR Upload
+            </h2>
+            <label className="mb-2 block text-xs font-medium text-slate-500 dark:text-slate-400" htmlFor="tor-category">
+              Document category
+            </label>
+            <input
+              className="mb-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+              id="tor-category"
+              onChange={(event) => setDocumentCategory(event.target.value)}
+              value={documentCategory}
+            />
+            <label className="mb-2 block text-xs font-medium text-slate-500 dark:text-slate-400" htmlFor="tor-file">
+              File
+            </label>
+            <input
+              accept=".pdf,.docx,.txt,.md,.markdown"
+              className="mb-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-cyan-600 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white dark:border-slate-700 dark:bg-slate-950"
+              id="tor-file"
+              onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+              type="file"
+            />
+            <button className="action-button" disabled={isLoading} onClick={handleUpload} type="button">
+              {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Upload size={16} />}
+              Upload
+            </button>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold">
+              <Files size={18} />
+              Uploaded TOR
+            </h2>
+            <div className="space-y-3">
+              {documents.length === 0 ? (
+                <p className="text-sm text-slate-500 dark:text-slate-400">No uploaded TOR files for this company.</p>
+              ) : (
+                documents.map((document) => (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950" key={document.id}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="font-medium">{document.file_name}</h3>
+                      <span className="text-xs uppercase text-slate-500 dark:text-slate-400">{document.file_type}</span>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                      {document.document_category} - {new Date(document.upload_date).toLocaleString()}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {(document.extracted_sections.sections ?? []).slice(0, 8).map((section) => (
+                        <span className="rounded-md bg-white px-2 py-1 text-xs text-slate-600 dark:bg-slate-900 dark:text-slate-300" key={`${document.id}-${section.order_index}`}>
+                          {section.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </section>
+      ) : (
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,520px)_minmax(0,1fr)]">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold">
+              <Sparkles size={18} />
+              Generate TOR
+            </h2>
+            <input
+              className="mb-3 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+              onChange={(event) => setProjectTitle(event.target.value)}
+              placeholder="Project title"
+              value={projectTitle}
+            />
+            <textarea
+              className="mb-3 min-h-24 w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+              onChange={(event) => setProjectDescription(event.target.value)}
+              placeholder="Project description"
+              value={projectDescription}
+            />
+            <div className="grid gap-3 md:grid-cols-2">
+              <input
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+                onChange={(event) => setBudget(event.target.value)}
+                placeholder="Budget"
+                value={budget}
+              />
+              <input
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+                onChange={(event) => setDuration(event.target.value)}
+                placeholder="Duration"
+                value={duration}
+              />
+            </div>
+            <textarea
+              className="my-3 min-h-36 w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+              onChange={(event) => setRequirements(event.target.value)}
+              placeholder="Requirements"
+              value={requirements}
+            />
+            <select
+              className="mb-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700 dark:bg-slate-950"
+              onChange={(event) => setLanguage(event.target.value as "th" | "en" | "th/en")}
+              value={language}
+            >
+              <option value="th">Thai</option>
+              <option value="en">English</option>
+              <option value="th/en">Thai / English</option>
+            </select>
+            <button className="action-button" disabled={isLoading} onClick={handleGenerateTor} type="button">
+              {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+              Generate
+            </button>
+
+            {examples.length > 0 ? (
+              <div className="mt-5">
+                <h3 className="mb-2 text-sm font-semibold uppercase tracking-normal text-slate-500 dark:text-slate-400">
+                  Retrieved examples
+                </h3>
+                <div className="space-y-2">
+                  {examples.map((example, index) => (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-950" key={`${example.file_id}-${index}`}>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <span className="font-medium">{example.section_name}</span>
+                        <span className="text-xs text-slate-500 dark:text-slate-400">{example.score.toFixed(2)}</span>
+                      </div>
+                      <p className="line-clamp-3 text-slate-600 dark:text-slate-300">{example.content}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex min-h-[calc(100vh-170px)] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-3 dark:border-slate-800">
+              <h2 className="text-lg font-semibold">Generated TOR Preview</h2>
+              <div className="flex flex-wrap gap-2">
+                <button className="icon-button-small" disabled={!generatedTor} onClick={copyGeneratedTor} title="Copy Markdown" type="button">
+                  <Clipboard size={15} />
+                </button>
+                <button className="icon-button-small" disabled={!generatedTor} onClick={downloadGeneratedTor} title="Download Markdown" type="button">
+                  <Download size={15} />
+                </button>
+                <button
+                  className="action-button"
+                  disabled={!generatedTor}
+                  onClick={() => onOpenInEditor(projectTitle || "Generated TOR", generatedTor)}
+                  type="button"
+                >
+                  <FileText size={16} />
+                  Open in editor
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-6">
+              <ReactMarkdown className="markdown-preview" remarkPlugins={[remarkGfm]}>
+                {generatedTor || "_Generated TOR will appear here._"}
+              </ReactMarkdown>
+            </div>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }

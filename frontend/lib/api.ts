@@ -1,4 +1,14 @@
-import type { DocumentPayload, DocumentRecord, GenerationMode, MarkdownTask } from "@/lib/types";
+import type {
+  CompanyRecord,
+  DocumentPayload,
+  DocumentRecord,
+  GenerationMode,
+  MarkdownTask,
+  TorDocumentRecord,
+  TorGeneratePayload,
+  TorGenerateResponse,
+  TorTemplateProfile,
+} from "@/lib/types";
 
 type TaskOptions = {
   prompt: string;
@@ -115,4 +125,46 @@ export async function exportPdf(payload: { title: string; markdown: string }) {
   }
 
   return response.blob();
+}
+
+export function listTorCompanies() {
+  return request<CompanyRecord[]>("/api/tor/companies");
+}
+
+export function listTorDocuments(companyName?: string) {
+  const params = companyName ? `?company_name=${encodeURIComponent(companyName)}` : "";
+  return request<TorDocumentRecord[]>(`/api/tor/documents${params}`);
+}
+
+export function getTorTemplateProfile(companyName: string) {
+  return request<TorTemplateProfile>(`/api/tor/profiles/${encodeURIComponent(companyName)}`);
+}
+
+export async function uploadTorDocument(payload: {
+  companyName: string;
+  documentCategory: string;
+  file: File;
+}) {
+  const form = new FormData();
+  form.append("company_name", payload.companyName);
+  form.append("document_category", payload.documentCategory);
+  form.append("file", payload.file);
+
+  const response = await fetch("/api/tor/upload", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return response.json() as Promise<TorDocumentRecord>;
+}
+
+export function generateTor(payload: TorGeneratePayload) {
+  return request<TorGenerateResponse>("/api/tor/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

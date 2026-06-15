@@ -1,4 +1,6 @@
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+import logging
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -7,19 +9,27 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import create_tables, get_db
 from app.llm import LLMClient, generate_messages, improve_messages, summarize_messages
-from app.models import Document
+from app.models import Company, Document, TorDocument, TorTemplateProfile
 from app.pdf import markdown_to_pdf
 from app.schemas import (
+    CompanyOut,
     DocumentCreate,
     DocumentOut,
     DocumentUpdate,
     GenerateRequest,
     MarkdownResponse,
     PdfExportRequest,
+    TorDocumentOut,
+    TorGenerateRequest,
+    TorGenerateResponse,
+    TorTemplateProfileOut,
     TransformRequest,
 )
+from app.tor_service import generate_tor, upload_tor_document
 
 settings = get_settings()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 app = FastAPI(title="Markdown AI Studio API", version="0.1.0")
 
 app.add_middleware(
@@ -130,3 +140,54 @@ def delete_document(document_id: str, db: Session = Depends(get_db)) -> Response
     db.delete(document)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/tor/companies", response_model=list[CompanyOut])
+def list_tor_companies(db: Session = Depends(get_db)) -> list[Company]:
+    statement = select(Company).order_by(Company.name.asc())
+    return list(db.scalars(statement).all())
+
+
+@app.post("/api/tor/upload", response_model=TorDocumentOut, status_code=status.HTTP_201_CREATED)
+async def upload_tor(
+    company_name: str = Form(...),
+    document_category: str = Form("TOR"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    client: LLMClient = Depends(get_llm_client),
+) -> TorDocument:
+    logger.info("Received TOR upload for company=%s file=%s", company_name, file.filename)
+    return await upload_tor_document(
+        db=db,
+        settings=settings,
+        client=client,
+        company_name=company_name,
+        document_category=document_category,
+        file=file,
+    )
+
+
+@app.get("/api/tor/documents", response_model=list[TorDocumentOut])
+def list_tor_documents(company_name: str | None = None, db: Session = Depends(get_db)) -> list[TorDocument]:
+    statement = select(TorDocument).order_by(TorDocument.upload_date.desc())
+    if company_name:
+        statement = statement.where(TorDocument.company_name == company_name)
+    return list(db.scalars(statement).all())
+
+
+@app.get("/api/tor/profiles/{company_name}", response_model=TorTemplateProfileOut)
+def get_tor_template_profile(company_name: str, db: Session = Depends(get_db)) -> TorTemplateProfile:
+    profile = db.scalar(select(TorTemplateProfile).where(TorTemplateProfile.company_name == company_name))
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company template profile was not found.")
+    return profile
+
+
+@app.post("/api/tor/generate", response_model=TorGenerateResponse)
+async def generate_company_tor(
+    request: TorGenerateRequest,
+    db: Session = Depends(get_db),
+    client: LLMClient = Depends(get_llm_client),
+) -> dict:
+    logger.info("Generating TOR for company=%s project=%s", request.company_name, request.project_title)
+    return await generate_tor(db=db, settings=settings, client=client, request=request)

@@ -18,6 +18,7 @@ class LLMClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.chat_url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+        self.embedding_url = f"{settings.llm_base_url.rstrip('/')}/embeddings"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -58,6 +59,34 @@ class LLMClient:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="LLM server response did not match the OpenAI chat completion format.",
+            ) from exc
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        payload = {"model": self.settings.embedding_model, "input": texts}
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+                response = await client.post(self.embedding_url, headers=self._headers(), json=payload)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:1000] or "Embedding server returned an error."
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not reach embedding server: {exc}",
+            ) from exc
+
+        data = response.json()
+        try:
+            ordered = sorted(data["data"], key=lambda item: item.get("index", 0))
+            return [item["embedding"] for item in ordered]
+        except (KeyError, TypeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Embedding server response did not match the OpenAI embeddings format.",
             ) from exc
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
