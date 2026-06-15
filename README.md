@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Markdown AI Studio
 
 Markdown AI Studio is a full-stack MVP for generating, editing, previewing, saving, and exporting Markdown with an OpenAI-compatible vLLM endpoint running on an H200 GPU server.
@@ -194,3 +195,6 @@ TOR generation accepts:
 - Add Alembic migrations before expanding the database schema beyond the MVP.
 - Add authentication and document ownership before exposing this outside a trusted network.
 - Add rate limits and request size limits at the reverse proxy for shared deployments.
+=======
+# MarkDown_V2
+>>>>>>> c3e9ca95eeefd99c90da14463bbc3100f9b59bc7
